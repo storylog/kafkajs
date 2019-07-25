@@ -18,6 +18,8 @@ const events = {
   REQUEST: consumerType(networkEvents.NETWORK_REQUEST),
   REQUEST_TIMEOUT: consumerType(networkEvents.NETWORK_REQUEST_TIMEOUT),
   REQUEST_QUEUE_SIZE: consumerType(networkEvents.NETWORK_REQUEST_QUEUE_SIZE),
+
+  END_RUN: consumerType('end_run'),
 }
 
 const wrappedEvents = {

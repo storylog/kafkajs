@@ -493,6 +493,81 @@ module.exports = ({
    */
   const getLogger = () => logger
 
+  /**
+   * Edited from run()
+   */
+  const runOnce = async ({
+    autoCommit = true,
+    autoCommitInterval = null,
+    autoCommitThreshold = null,
+    eachBatchAutoResolve = true,
+    partitionsConsumedConcurrently = 1,
+    eachBatch = null,
+    eachMessage = null,
+  } = {}) => {
+    if (consumerGroup) {
+      logger.warn('consumer#run was called, but the consumer is already running', { groupId })
+      return
+    }
+
+    consumerGroup = createConsumerGroup({
+      autoCommitInterval,
+      autoCommitThreshold,
+    })
+
+    const start = async onCrash => {
+      logger.info('Starting', { groupId })
+      runner = createRunner({
+        autoCommit,
+        eachBatchAutoResolve,
+        eachBatch,
+        eachMessage,
+        onCrash,
+        partitionsConsumedConcurrently,
+      })
+
+      await runner.startOnce()
+    }
+
+    const restart = onCrash => {
+      consumerGroup = createConsumerGroup({
+        autoCommit,
+        autoCommitInterval,
+        autoCommitThreshold,
+      })
+
+      start(onCrash)
+    }
+
+    const onCrash = async e => {
+      logger.error(`Crash: ${e.name}: ${e.message}`, {
+        groupId,
+        retryCount: e.retryCount,
+        stack: e.stack,
+      })
+
+      await disconnect()
+
+      instrumentationEmitter.emit(CRASH, {
+        error: e,
+        groupId,
+      })
+
+      if (e.name === 'KafkaJSNumberOfRetriesExceeded' || e.retriable === true) {
+        const retryTime = e.retryTime || retry.initialRetryTime || initialRetryTime
+        logger.error(`Restarting the consumer in ${retryTime}ms`, {
+          retryCount: e.retryCount,
+          retryTime,
+          groupId,
+        })
+
+        setTimeout(() => restart(onCrash), retryTime)
+      }
+    }
+
+    await start(onCrash)
+  }
+
   return {
     connect,
     disconnect,
@@ -508,5 +583,7 @@ module.exports = ({
     on,
     events,
     logger: getLogger,
+
+    runOnce,
   }
 }

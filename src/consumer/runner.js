@@ -2,7 +2,7 @@ const createRetry = require('../retry')
 const limitConcurrency = require('../utils/concurrency')
 const { KafkaJSError } = require('../errors')
 const {
-  events: { GROUP_JOIN, FETCH, FETCH_START, START_BATCH_PROCESS, END_BATCH_PROCESS },
+  events: { GROUP_JOIN, FETCH, FETCH_START, START_BATCH_PROCESS, END_BATCH_PROCESS, END_RUN },
 } = require('./instrumentationEvents')
 
 const isTestMode = process.env.NODE_ENV === 'test'
@@ -457,5 +457,100 @@ module.exports = class Runner {
         throw e
       }
     })
+  }
+
+  async oneTimeFetch() {
+    if (!this.running) {
+      this.logger.debug('consumer not running, exiting', {
+        groupId: this.consumerGroup.groupId,
+        memberId: this.consumerGroup.memberId,
+      })
+      return
+    }
+
+    return this.retrier(async (bail, retryCount, retryTime) => {
+      try {
+        this.consuming = true
+        await this.fetch()
+        this.consuming = false
+        this.instrumentationEmitter.emit(END_RUN, {})
+      } catch (e) {
+        if (!this.running) {
+          this.logger.debug('consumer not running, exiting', {
+            error: e.message,
+            groupId: this.consumerGroup.groupId,
+            memberId: this.consumerGroup.memberId,
+          })
+          return
+        }
+
+        if (isRebalancing(e)) {
+          this.logger.error('The group is rebalancing, re-joining', {
+            groupId: this.consumerGroup.groupId,
+            memberId: this.consumerGroup.memberId,
+            error: e.message,
+            retryCount,
+            retryTime,
+          })
+
+          await this.join()
+          this.scheduleFetch()
+          return
+        }
+
+        if (e.type === 'UNKNOWN_MEMBER_ID') {
+          this.logger.error('The coordinator is not aware of this member, re-joining the group', {
+            groupId: this.consumerGroup.groupId,
+            memberId: this.consumerGroup.memberId,
+            error: e.message,
+            retryCount,
+            retryTime,
+          })
+
+          this.consumerGroup.memberId = null
+          await this.join()
+          this.scheduleFetch()
+          return
+        }
+
+        if (e.name === 'KafkaJSOffsetOutOfRange') {
+          this.scheduleFetch()
+          return
+        }
+
+        if (e.name === 'KafkaJSNotImplemented') {
+          return bail(e)
+        }
+
+        this.logger.debug('Error while fetching data, trying again...', {
+          groupId: this.consumerGroup.groupId,
+          memberId: this.consumerGroup.memberId,
+          error: e.message,
+          stack: e.stack,
+          retryCount,
+          retryTime,
+        })
+
+        throw e
+      } finally {
+        this.consuming = false
+      }
+    }).catch(this.onCrash)
+  }
+
+  async startOnce() {
+    if (this.running) {
+      return
+    }
+
+    try {
+      await this.consumerGroup.connect()
+      await this.join()
+
+      this.running = true
+      this.oneTimeFetch()
+    } catch (e) {
+      this.onCrash(e)
+    }
   }
 }
