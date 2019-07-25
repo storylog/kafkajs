@@ -494,7 +494,7 @@ module.exports = class Runner {
           })
 
           await this.join()
-          this.scheduleFetch()
+          this.oneTimeFetch()
           return
         }
 
@@ -509,12 +509,12 @@ module.exports = class Runner {
 
           this.consumerGroup.memberId = null
           await this.join()
-          this.scheduleFetch()
+          this.oneTimeFetch()
           return
         }
 
         if (e.name === 'KafkaJSOffsetOutOfRange') {
-          this.scheduleFetch()
+          this.oneTimeFetch()
           return
         }
 
